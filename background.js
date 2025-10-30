@@ -1,101 +1,139 @@
+// background.js
 
 // Global variable to hold the initialized Summarizer object
-// Set to null until 'await Summarizer.create()' is complete
 let quickMindSummarizer = null;
+let isInitializing = false; 
 
-// --- Ensure content script is injected dynamically when needed ---
-async function ensureContentScript(tabId) {
-    try {
-        await chrome.scripting.executeScript({
-            target: { tabId },
-            files: ['content.js']
-        });
-        console.log("✅ Content script injected dynamically into tab:", tabId);
-    } catch (e) {
-        console.warn("⚠️ Could not inject content script:", e);
+const CHUNK_SIZE = 4000; 
+const CHUNK_OVERLAP = 200; 
+
+// --- Helper: Chunk Text for Batch Summarization (Map-Reduce) ---
+function chunkText(text) {
+    const chunks = [];
+    for (let i = 0; i < text.length; i += CHUNK_SIZE - CHUNK_OVERLAP) {
+        const start = Math.max(0, i); 
+        const end = Math.min(text.length, start + CHUNK_SIZE); 
+        chunks.push(text.substring(start, end));
+
+        if (end === text.length) {
+            break;
+        }
     }
+    return chunks;
 }
 
+// --- Helper: Handle Summarization for Long Documents (Map-Reduce) ---
+async function processLongSummary(summarizerInstance, text) {
+    // 1. If text is short, perform single summary call
+    if (text.length <= CHUNK_SIZE) {
+        const summaryString = await summarizerInstance.summarize(text);
+        // FIX: Wrap the final string in the expected object format.
+        return { output: summaryString };
+    }
+    
+    // 2. Map: Chunk the text
+    const chunks = chunkText(text);
+
+    // 3. Map: Summarize all chunks in parallel
+    const summaryPromises = chunks.map(chunk => {
+        return summarizerInstance.summarize(chunk).catch(e => {
+            console.error("Error summarizing chunk:", e);
+            return null; 
+        });
+    });
+
+    const chunkSummaries = await Promise.all(summaryPromises);
+
+    // 4. Reduce: Combine the summaries into a single string
+    const combinedSummaryText = chunkSummaries
+        .map(result => result && result.output ? result.output : '') 
+        .filter(s => s.length > 0)
+        .join('\n\n---\n\n'); 
+
+    if (combinedSummaryText.length === 0) {
+        // This path is already correctly returning the object structure
+        return { output: 'The summary failed to produce a result.' };
+    }
+    
+    // 5. Reduce: Summarize the combined summaries to get the final result
+    let finalSummaryString;
+    if (combinedSummaryText.length > CHUNK_SIZE) {
+        const finalInput = combinedSummaryText.substring(0, CHUNK_SIZE);
+        finalSummaryString = await summarizerInstance.summarize(finalInput);
+    } else {
+        finalSummaryString = await summarizerInstance.summarize(combinedSummaryText);
+    }
+
+    // FIX: Wrap the final string result from the Map-Reduce path in the expected object format.
+    return { output: finalSummaryString };
+}
 
 // --- Function to check and initialize the Summarizer object ---
 async function ensureSummarizerInitialized() {
     // 1. If already initialized, return immediately (idempotent)
     if (quickMindSummarizer) {
-        console.log("Summarizer already initialized.");
         return true; 
     }
     
+    // NEW: If initialization is already running, wait for it to finish
+    if (isInitializing) {
+         await new Promise(resolve => {
+            const checkInterval = setInterval(() => {
+                if (quickMindSummarizer || !isInitializing) {
+                    clearInterval(checkInterval);
+                    resolve();
+                }
+            }, 50);
+        });
+        return !!quickMindSummarizer;
+    }
+
     // 2. Otherwise, attempt to create it
     if (typeof Summarizer !== 'undefined' && Summarizer.create) {
+        isInitializing = true; 
         try {
             console.log("Attempting to initialize Summarizer...");
-            const options = { type: 'key-points', length: 'short', format: 'markdown' };
             
-            // This is the long-running operation that can interfere with the worker lifecycle
-            quickMindSummarizer = await Summarizer.create(options);
+            const options = { type: 'tldr', length: 'short', format: 'plain-text'};
+            quickMindSummarizer = await Summarizer.create(options); 
             
             console.log("QuickMind Summarizer initialized successfully.");
             return true;
         } catch (error) {
             console.error("CRITICAL: Failed to create QuickMind Summarizer:", error);
-            // Reset to null if creation fails
             quickMindSummarizer = null; 
             return false;
+        } finally {
+            isInitializing = false; 
         }
     }
     console.error("CRITICAL: Summarizer API not found.");
     return false;
   }
 
-// Initialization: Called when the extension is first installed, updated, or Chrome starts.
+// Initialization: Context menu creation
 chrome.runtime.onInstalled.addListener(async () => {
-    // 1. Create the context menus
-    chrome.contextMenus.create({
-        id: "quickmind_parent",
-        title: "QuickMind",
-        contexts: ["selection"]
-    });
-    chrome.contextMenus.create({
-        id: "quickmind_summarize",
-        title: "Summarize",
-        parentId: "quickmind_parent",
-        contexts: ["selection"]
-    });
-    // Add other context menu items here later (Translate/Proofread)
-
+    chrome.contextMenus.create({ id: "quickmind_parent", title: "QuickMind", contexts: ["selection"] });
+    chrome.contextMenus.create({ id: "quickmind_summarize", title: "Summarize", parentId: "quickmind_parent", contexts: ["selection"] });
 });
 
 
-// --- Communication Listeners (General) ---
-
 // Listener for status checks from the popup
-chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'CHECK_AI_STATUS') {
-        // Check the current state of the global object.
-        // It will be null if the object creation failed/timed out, or if it hasn't run yet.
-        const isAvailable = quickMindSummarizer !== null;
-
-        // If it is not available, try to run the initializaiton in the background
-        // but do not await it, which could block the Service Worker.
-        if (!isAvailable) {
-          ensureSummarizerInitialized().catch(e => console.error("Background status init failed: ", e));
-        }
-
-        sendResponse({ available: isAvailable });
-        return true; // Keep the message channel open for async response
+        ensureSummarizerInitialized().then(isReady => {
+            sendResponse({ available: isReady });
+        });
+        return true; 
     }
 });
 
 
 // --- UI Interaction Listeners (Specific) ---
-
-// Listener for a click on any of your menu items (Right-Click)
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-    const action = info.menuItemId.replace('quickmind_', ''); // 'summarize'
+    const action = info.menuItemId.replace('quickmind_', ''); 
 
     if (action === 'summarize' && tab.id) {
-        await ensureContentScript(tab.id);
-
         const isReady = await ensureSummarizerInitialized();
 
         if (!isReady) {
@@ -113,7 +151,16 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
                 action: 'GET_SELECTED_TEXT'
             });
             
-            const selectedText = response.text;
+            let selectedText = response.text;
+            
+            // --- FIX: Input Sanitization (Aggressive Cleaning) ---
+            if (selectedText) {
+                // 1. Normalize all forms of whitespace (including non-breaking spaces)
+                selectedText = selectedText.replace(/[\s\uFEFF\xA0]+/g, ' ').trim();
+                // 2. Remove all non-ASCII control characters that might break the model
+                selectedText = selectedText.replace(/[^\x00-\x7F]/g, '');
+            }
+            // ---------------------------------------------------
 
             if (!selectedText) {
                 chrome.tabs.sendMessage(tab.id, {
@@ -123,21 +170,30 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
                 });
                 return;
             }
+            // Send an instant LOADING message
+            chrome.tabs.sendMessage(tab.id, {
+              action: 'DISPLAY_RESULT',
+              result: 'Summarizing now... This may take a moment.',
+              originalAction: 'LOADING'
+            })
 
-            // B. Execute the On-Device Summarization (Batch summarization)
-            // Call summarize() on the pre-created object
-            const summaryResult = await quickMindSummarizer.summarize(selectedText);
-            console.log("Summarization complete. Result length: ", summaryResult.length);
+            // B. Execute the On-Device Summarization (Using Map-Reduce for long text)
+            const summaryResultObject = await processLongSummary(quickMindSummarizer, selectedText);
+            
+            const summaryText = summaryResultObject && summaryResultObject.output
+                ? summaryResultObject.output 
+                : 'Summarization failed to produce a result.';
 
-            // C. Send the final result back to the content script for display
+            console.log("Summarization complete. Result length: ", summaryText.length);
+
+            // C. Send the final result back to the content script for display (SUCCESS PATH)
             chrome.tabs.get(tab.id, (currentTab) => {
                 if (chrome.runtime.lastError) {
                     console.error("Tab closed or invalid after summarization:", chrome.runtime.lastError.message);
                 } else if (currentTab) {
-                    // Only send if the tab is confirmed to be open
                     chrome.tabs.sendMessage(currentTab.id, {
                         action: 'DISPLAY_RESULT',
-                        result: summaryResult,
+                        result: summaryText,
                         originalAction: action
                     });
                 }
@@ -146,10 +202,17 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         } catch (error) {
             console.error('QuickMind Summarization Error:', error);
             if (tab.id) {
-                chrome.tabs.sendMessage(tab.id, {
-                    action: 'DISPLAY_RESULT',
-                    result: `An unexpected error occurred during summarization: ${error.message}`,
-                    originalAction: action
+                // FIX: Guard the error reporting message (Connection Guard)
+                chrome.tabs.get(tab.id, (currentTab) => {
+                    if (!chrome.runtime.lastError && currentTab) {
+                        chrome.tabs.sendMessage(currentTab.id, {
+                            action: 'DISPLAY_RESULT',
+                            result: `An unexpected error occurred during summarization: ${error.message}`,
+                            originalAction: action
+                        });
+                    } else {
+                         console.warn('Could not report error to tab; tab may have closed.');
+                    }
                 });
             }
         }

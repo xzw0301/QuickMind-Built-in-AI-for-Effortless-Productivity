@@ -1,3 +1,4 @@
+
 # ⚡ QuickMind – Built-in AI for Effortless Productivity
 
 **QuickMind** is a Chrome extension that boosts your productivity with Google’s **built-in on-device AI**.  
@@ -152,3 +153,4 @@ MIT License © 2025 Sophia W.
 Built on Chrome’s next-generation **on-device AI** for seamless productivity.
 
 
+>>>>>>> c49d386 (Initial version with sumarizer feature)

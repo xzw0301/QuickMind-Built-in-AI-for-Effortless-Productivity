@@ -4,7 +4,7 @@
 let quickMindSummarizer = null;
 let isInitializing = false; 
 
-const CHUNK_SIZE = 4000; 
+const CHUNK_SIZE = 3000; 
 const CHUNK_OVERLAP = 200; 
 
 // --- Helper: Chunk Text for Batch Summarization (Map-Reduce) ---
@@ -23,23 +23,50 @@ function chunkText(text) {
 }
 
 // --- Helper: Handle Summarization for Long Documents (Map-Reduce) ---
-async function processLongSummary(summarizerInstance, text) {
+async function processLongSummary(summarizerInstance, text, isReductionStep = false, level = 1) {
+    console.log(`--- Starting Summarization Level ${level} (Reduction Step: ${isReductionStep}) ---`);
+
     // 1. If text is short, perform single summary call
-    if (text.length <= CHUNK_SIZE) {
-        const summaryString = await summarizerInstance.summarize(text);
-        // FIX: Wrap the final string in the expected object format.
-        return { output: summaryString };
+    if (text.length <= CHUNK_SIZE && !isReductionStep) {
+        console.log("Input is short. Performing single summary call.");
+        try {
+            const summaryString = await summarizerInstance.summarize(text);
+            return { output: summaryString };
+        } catch (error) {
+            console.error(`ERROR: Single summary call failed at Level ${level}:`, error);
+            return { output: null };
+        }
     }
     
     // 2. Map: Chunk the text
     const chunks = chunkText(text);
+    console.log(`Text split into ${chunks.length} chunks.`);
 
     // 3. Map: Summarize all chunks in parallel
-    const summaryPromises = chunks.map(chunk => {
-        return summarizerInstance.summarize(chunk).catch(e => {
-            console.error("Error summarizing chunk:", e);
-            return null; 
-        });
+    const summaryPromises = chunks.map(async (chunk, index) => {
+        const prompt = isReductionStep 
+            ? `Combine and condense the following partial summaries into a single, cohesive, final summary: ${chunk}` 
+            : `Summarize the following text, focusing on key facts and arguments: ${chunk}`;
+
+        try {
+            // CRITICAL CHECK: Call the API and ensure result has content
+            const result = await summarizerInstance.summarize(prompt);
+            
+            // The API returns a string directly, not an object, if successful
+            if (typeof result === 'string' && result.trim().length > 50) { 
+                return { output: result };
+            } else if (typeof result === 'string' && result.trim().length === 0) {
+                 console.warn(`WARN: Chunk ${index} produced an empty string result.`);
+                 return { output: null }; 
+            }
+            // Should not happen if API returns string, but handles unexpected object returns
+            return result && result.output ? result : { output: null }; 
+            
+        } catch (error) {
+            // Log the error for the failing chunk
+            console.error(`ERROR: Chunk ${index} failed at Level ${level}:`, error);
+            return { output: null }; 
+        }
     });
 
     const chunkSummaries = await Promise.all(summaryPromises);
@@ -47,25 +74,41 @@ async function processLongSummary(summarizerInstance, text) {
     // 4. Reduce: Combine the summaries into a single string
     const combinedSummaryText = chunkSummaries
         .map(result => result && result.output ? result.output : '') 
-        .filter(s => s.length > 0)
+        .filter(s => s.trim().length > 0)
         .join('\n\n---\n\n'); 
 
-    if (combinedSummaryText.length === 0) {
-        // This path is already correctly returning the object structure
+    console.log(`Level ${level} Reduction: Combined text length: ${combinedSummaryText.length}`);
+
+    if (combinedSummaryText.length < 50) { // If final text is minimal, fail gracefully
+        console.error(`FATAL: Level ${level} produced virtually no valid intermediate content.`);
         return { output: 'The summary failed to produce a result.' };
     }
     
     // 5. Reduce: Summarize the combined summaries to get the final result
-    let finalSummaryString;
     if (combinedSummaryText.length > CHUNK_SIZE) {
-        const finalInput = combinedSummaryText.substring(0, CHUNK_SIZE);
-        finalSummaryString = await summarizerInstance.summarize(finalInput);
-    } else {
-        finalSummaryString = await summarizerInstance.summarize(combinedSummaryText);
-    }
+        // Recursively reduce the text (go to the next level)
+        return await processLongSummary(summarizerInstance, combinedSummaryText, true, level + 1);
 
-    // FIX: Wrap the final string result from the Map-Reduce path in the expected object format.
-    return { output: finalSummaryString };
+    } else {
+        // Final reduction step
+        const finalPrompt = `Provide a single, cohesive summary of the following text: ${combinedSummaryText}`;
+        console.log("Performing final summary reduction.");
+
+        try {
+            const finalSummaryString = await summarizerInstance.summarize(finalPrompt);
+            
+            if (typeof finalSummaryString === 'string' && finalSummaryString.trim().length > 0) {
+                 return { output: finalSummaryString };
+            } else {
+                 console.error("FATAL: Final summary API call returned an empty result.");
+                 return { output: 'The summary failed to produce a result.' };
+            }
+           
+        } catch (error) {
+            console.error("ERROR: Final summary reduction failed.", error);
+            return { output: 'The summary failed to produce a result.' };
+        }
+    }
 }
 
 // --- Function to check and initialize the Summarizer object ---

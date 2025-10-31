@@ -1,4 +1,3 @@
-// content.js
 
 // Global variable to hold the dialog element reference
 let currentDialog = null;
@@ -17,6 +16,10 @@ function displaySummaryDialog(text, isFinalResult, originalAction) {
         const header = document.createElement('div');
         header.id = 'quickmind-header';
         
+        // Create the scrollable wrapper for the content
+        const contentWrapper = document.createElement('div');
+        contentWrapper.id = 'quickmind-content-wrapper';
+        
         const contentArea = document.createElement('p');
         contentArea.id = 'quickmind-content';
 
@@ -25,10 +28,12 @@ function displaySummaryDialog(text, isFinalResult, originalAction) {
         dismissButton.textContent = 'Dismiss';
         dismissButton.addEventListener('click', () => dialog.remove());
 
-        // Assemble the dialog (once)
+        // Assemble the dialog with the new wrapper
+        contentWrapper.appendChild(contentArea); // Content goes inside the wrapper
+        
         dialog.appendChild(header);
-        dialog.appendChild(contentArea);
-        dialog.appendChild(dismissButton);
+        dialog.appendChild(contentWrapper); // <-- Add the scrollable wrapper here
+        dialog.appendChild(dismissButton); // Button is outside the wrapper
         document.body.appendChild(dialog);
     }
     
@@ -37,7 +42,7 @@ function displaySummaryDialog(text, isFinalResult, originalAction) {
     const contentArea = dialog.querySelector('#quickmind-content');
     const dismissButton = dialog.querySelector('#quickmind-dismiss-btn');
     
-    // CRITICAL FIX: Set title based on the original action
+    // Set title based on the original action
     if (originalAction === 'summarize') {
         header.textContent = 'Summary';
     } else if (originalAction === 'translate') {

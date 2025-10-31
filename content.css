@@ -1,74 +1,84 @@
 
-/* * 1. Main Dialog Container (Top Right Corner)
- * This acts as the main container, fixed to the top-right of the screen.
- */
-/* content.css - Update the #quickmind-dialog block */
-
+/* --- 1. Main Dialog Container (Top Right Corner) --- */
 #quickmind-dialog {
-    position: fixed !important; /* Force position */
-    top: 20px !important;       /* Force top position */
-    right: 20px !important;     /* Force right position */
-    z-index: 2147483647 !important; /* Force Z-index */
+    position: fixed !important;
+    top: 20px !important;
+    right: 20px !important;
+    z-index: 2147483647 !important; 
     
-    /* Ensure the color and minimum dimensions are set */
+    /* Layout using Flexbox for proper stacking and filling */
+    display: flex;
+    flex-direction: column;
+    
+    /* Dimensions */
+    width: 400px;
+    max-height: 80vh;
+    
+    /* Appearance */
     background-color: #333 !important; 
-    min-width: 250px !important; /* Guarantee a minimum visible width */
-    min-height: 100px !important; /* Guarantee a minimum visible height */
-    
     border: 1px solid #555;
     border-radius: 8px;
-    padding: 15px 20px 60px 20px;
-    
-    max-width: 400px;
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
-    position: relative;
-    max-height: 80vh;
-    overflow-y: auto;
+    
+    /* Remove padding that was interfering with scrolling/positioning */
+    padding: 0; 
     
     color: white; 
     font-family: 'Segoe UI', Roboto, sans-serif;
-    transition: none !important; /* Temporarily remove animation for debugging visibility */
 }
 
-/* * 2. Title (Header) 
- */
+/* --- 2. Title (Header) --- */
 #quickmind-header {
     font-size: 1.1em;
-    font-weight: 700; /* Solid title font */
+    font-weight: 700;
     color: #fff; 
-    margin: 0 0 10px 0;
-    padding-bottom: 5px;
+    padding: 10px 15px; /* Add internal padding */
     border-bottom: 1px solid #555;
+    /* Ensure the header doesn't shrink */
+    flex-shrink: 0;
 }
 
-/* * 3. Summary Content Area 
- * Reduced font-weight for content as requested.
- */
+/* --- 3. Scrollable Content Wrapper (The Box) --- */
+#quickmind-content-wrapper {
+    /* Take all available vertical space */
+    flex-grow: 1; 
+    
+    /* This container handles the scrolling */
+    overflow-y: auto; 
+    
+    /* Add internal padding to create the 'box' look */
+    padding: 15px; 
+}
+
+/* --- 4. Content Text --- */
 #quickmind-content {
     font-size: 0.95em;
     line-height: 1.6;
     white-space: pre-wrap;
-    font-weight: 600; /* Less bold/normal font weight */
+    font-weight: 600; 
     color: #eee; 
     margin: 0;
 }
 
-/* * 4. Dismiss Button (Bigger, Bottom Right)
- */
+/* --- 5. Dismiss Button (Fixed to Bottom-Right) --- */
 #quickmind-dismiss-btn {
-    position: absolute;
-    bottom: 15px;
-    right: 20px; /* Moves it to the bottom right side */
+    
+    position: relative; /* Change to relative to be part of the flow */
+    align-self: flex-end; /* Push the button to the right side of the flex column */
+    margin: 10px 15px; /* Add margin around the button */
     
     background: #444; 
     color: white;
     border: none;
     border-radius: 6px;
-    padding: 6px 15px; /* Bigger size */
+    padding: 6px 15px;
     cursor: pointer;
-    font-size: 0.9em; /* Slightly bigger font */
+    font-size: 0.9em;
     font-weight: 600;
     transition: background-color 0.2s;
+    
+    /* Ensure the button doesn't scroll/shrink */
+    flex-shrink: 0; 
 }
 
 #quickmind-dismiss-btn:hover {

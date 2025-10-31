@@ -1,9 +1,10 @@
+// content.js
 
 // Global variable to hold the dialog element reference
 let currentDialog = null;
 
 // Helper function to create/update the summary dialog
-function displaySummaryDialog(text, isFinalResult) {
+function displaySummaryDialog(text, isFinalResult, originalAction) {
     const dialogId = 'quickmind-dialog';
 
     // 1. Find or Create the dialog container
@@ -36,7 +37,18 @@ function displaySummaryDialog(text, isFinalResult) {
     const contentArea = dialog.querySelector('#quickmind-content');
     const dismissButton = dialog.querySelector('#quickmind-dismiss-btn');
     
-    header.textContent = 'Summary'; 
+    // CRITICAL FIX: Set title based on the original action
+    if (originalAction === 'summarize') {
+        header.textContent = 'Summary';
+    } else if (originalAction === 'translate') {
+        header.textContent = 'Translation';
+    } else if (originalAction === 'LOADING') {
+        header.textContent = 'QuickMind Processing...';
+    } else {
+        header.textContent = 'QuickMind Result';
+    }
+    
+    // Set the content
     contentArea.innerHTML = text.replace(/\n/g, '<br>');
     
     if (isFinalResult) {
@@ -61,7 +73,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     
     if (request.action === 'DISPLAY_RESULT') {
         const isFinal = request.originalAction !== 'LOADING';
-        displaySummaryDialog(request.result, isFinal);
+        
+        // CRITICAL FIX: Pass the originalAction to the display function
+        displaySummaryDialog(request.result, isFinal, request.originalAction);
         
         return false;
     }

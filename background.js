@@ -1,13 +1,17 @@
-// background.js
 
-// Global variable to hold the initialized Summarizer object
+// Global variables for AI instances and initialization status
 let quickMindSummarizer = null;
-let isInitializing = false; 
+let isSummarizerInitializing = false; 
 
+// NEW: Global variables for the Translator API
+let quickMindTranslator = null;
+let isTranslatorInitializing = false; 
+
+// Map-Reduce Constants (for summarization)
 const CHUNK_SIZE = 3000; 
 const CHUNK_OVERLAP = 200; 
-
 // --- Helper: Chunk Text for Batch Summarization (Map-Reduce) ---
+// ... (chunkText function remains the same)
 function chunkText(text) {
     const chunks = [];
     for (let i = 0; i < text.length; i += CHUNK_SIZE - CHUNK_OVERLAP) {
@@ -23,10 +27,10 @@ function chunkText(text) {
 }
 
 // --- Helper: Handle Summarization for Long Documents (Map-Reduce) ---
+// ... (processLongSummary function remains the same)
 async function processLongSummary(summarizerInstance, text, isReductionStep = false, level = 1) {
     console.log(`--- Starting Summarization Level ${level} (Reduction Step: ${isReductionStep}) ---`);
 
-    // 1. If text is short, perform single summary call
     if (text.length <= CHUNK_SIZE && !isReductionStep) {
         console.log("Input is short. Performing single summary call.");
         try {
@@ -38,32 +42,26 @@ async function processLongSummary(summarizerInstance, text, isReductionStep = fa
         }
     }
     
-    // 2. Map: Chunk the text
     const chunks = chunkText(text);
     console.log(`Text split into ${chunks.length} chunks.`);
 
-    // 3. Map: Summarize all chunks in parallel
     const summaryPromises = chunks.map(async (chunk, index) => {
         const prompt = isReductionStep 
             ? `Combine and condense the following partial summaries into a single, cohesive, final summary: ${chunk}` 
             : `Summarize the following text, focusing on key facts and arguments: ${chunk}`;
 
         try {
-            // CRITICAL CHECK: Call the API and ensure result has content
             const result = await summarizerInstance.summarize(prompt);
             
-            // The API returns a string directly, not an object, if successful
             if (typeof result === 'string' && result.trim().length > 50) { 
                 return { output: result };
             } else if (typeof result === 'string' && result.trim().length === 0) {
                  console.warn(`WARN: Chunk ${index} produced an empty string result.`);
                  return { output: null }; 
             }
-            // Should not happen if API returns string, but handles unexpected object returns
             return result && result.output ? result : { output: null }; 
             
         } catch (error) {
-            // Log the error for the failing chunk
             console.error(`ERROR: Chunk ${index} failed at Level ${level}:`, error);
             return { output: null }; 
         }
@@ -71,7 +69,6 @@ async function processLongSummary(summarizerInstance, text, isReductionStep = fa
 
     const chunkSummaries = await Promise.all(summaryPromises);
 
-    // 4. Reduce: Combine the summaries into a single string
     const combinedSummaryText = chunkSummaries
         .map(result => result && result.output ? result.output : '') 
         .filter(s => s.trim().length > 0)
@@ -79,18 +76,15 @@ async function processLongSummary(summarizerInstance, text, isReductionStep = fa
 
     console.log(`Level ${level} Reduction: Combined text length: ${combinedSummaryText.length}`);
 
-    if (combinedSummaryText.length < 50) { // If final text is minimal, fail gracefully
+    if (combinedSummaryText.length < 50) { 
         console.error(`FATAL: Level ${level} produced virtually no valid intermediate content.`);
         return { output: 'The summary failed to produce a result.' };
     }
     
-    // 5. Reduce: Summarize the combined summaries to get the final result
     if (combinedSummaryText.length > CHUNK_SIZE) {
-        // Recursively reduce the text (go to the next level)
         return await processLongSummary(summarizerInstance, combinedSummaryText, true, level + 1);
 
     } else {
-        // Final reduction step
         const finalPrompt = `Provide a single, cohesive summary of the following text: ${combinedSummaryText}`;
         console.log("Performing final summary reduction.");
 
@@ -111,18 +105,44 @@ async function processLongSummary(summarizerInstance, text, isReductionStep = fa
     }
 }
 
-// --- Function to check and initialize the Summarizer object ---
+
+// --- NEW: Helper for Translation (using batch or streaming) ---
+// NOTE: Hardcoded language pair (English to Spanish) until a settings UI is added.
+const TRANSLATE_SOURCE = 'en';
+const TRANSLATE_TARGET = 'de'; 
+
+async function processTranslation(translatorInstance, text) {
+    try {
+        if (text.length > CHUNK_SIZE) { 
+            // Use streaming for very long texts (as recommended by API docs)
+            const stream = translatorInstance.translateStreaming(text);
+            let translatedText = '';
+            for await (const chunk of stream) {
+                translatedText += chunk;
+            }
+            return { output: translatedText };
+        } else {
+            // Use simple batch translate for short/medium texts
+            const translatedText = await translatorInstance.translate(text);
+            return { output: translatedText };
+        }
+    } catch (error) {
+        console.error("QuickMind Translation Error:", error);
+        return { output: `Translation failed. Error: ${error.message}. Ensure model for ${TRANSLATE_SOURCE} to ${TRANSLATE_TARGET} is downloaded.` };
+    }
+}
+
+
+// --- Function to check and initialize the Summarizer object (existing) ---
 async function ensureSummarizerInitialized() {
-    // 1. If already initialized, return immediately (idempotent)
     if (quickMindSummarizer) {
         return true; 
     }
     
-    // NEW: If initialization is already running, wait for it to finish
-    if (isInitializing) {
+    if (isSummarizerInitializing) {
          await new Promise(resolve => {
             const checkInterval = setInterval(() => {
-                if (quickMindSummarizer || !isInitializing) {
+                if (quickMindSummarizer || !isSummarizerInitializing) {
                     clearInterval(checkInterval);
                     resolve();
                 }
@@ -131,15 +151,12 @@ async function ensureSummarizerInitialized() {
         return !!quickMindSummarizer;
     }
 
-    // 2. Otherwise, attempt to create it
     if (typeof Summarizer !== 'undefined' && Summarizer.create) {
-        isInitializing = true; 
+        isSummarizerInitializing = true; 
         try {
             console.log("Attempting to initialize Summarizer...");
-            
             const options = { type: 'tldr', length: 'short', format: 'plain-text'};
             quickMindSummarizer = await Summarizer.create(options); 
-            
             console.log("QuickMind Summarizer initialized successfully.");
             return true;
         } catch (error) {
@@ -147,25 +164,72 @@ async function ensureSummarizerInitialized() {
             quickMindSummarizer = null; 
             return false;
         } finally {
-            isInitializing = false; 
+            isSummarizerInitializing = false; 
         }
     }
     console.error("CRITICAL: Summarizer API not found.");
     return false;
-  }
+}
+
+
+// --- NEW: Function to check and initialize the Translator object ---
+async function ensureTranslatorInitialized() {
+    if (quickMindTranslator) {
+        return true; 
+    }
+    
+    if (isTranslatorInitializing) {
+         await new Promise(resolve => {
+            const checkInterval = setInterval(() => {
+                if (quickMindTranslator || !isTranslatorInitializing) {
+                    clearInterval(checkInterval);
+                    resolve();
+                }
+            }, 50);
+        });
+        return !!quickMindTranslator;
+    }
+
+    if (typeof Translator !== 'undefined' && Translator.create) {
+        isTranslatorInitializing = true; 
+        try {
+            console.log("Attempting to initialize Translator...");
+            
+            const options = { 
+                sourceLanguage: TRANSLATE_SOURCE, 
+                targetLanguage: TRANSLATE_TARGET 
+            };
+            quickMindTranslator = await Translator.create(options); 
+            
+            console.log(`QuickMind Translator initialized successfully (${TRANSLATE_SOURCE} -> ${TRANSLATE_TARGET}).`);
+            return true;
+        } catch (error) {
+            console.error("CRITICAL: Failed to create QuickMind Translator:", error);
+            quickMindTranslator = null; 
+            return false;
+        } finally {
+            isTranslatorInitializing = false; 
+        }
+    }
+    console.error("CRITICAL: Translator API not found.");
+    return false;
+}
 
 // Initialization: Context menu creation
 chrome.runtime.onInstalled.addListener(async () => {
     chrome.contextMenus.create({ id: "quickmind_parent", title: "QuickMind", contexts: ["selection"] });
     chrome.contextMenus.create({ id: "quickmind_summarize", title: "Summarize", parentId: "quickmind_parent", contexts: ["selection"] });
+    // NEW: Add the Translate context menu item
+    chrome.contextMenus.create({ id: "quickmind_translate", title: "Translate", parentId: "quickmind_parent", contexts: ["selection"] }); 
 });
 
 
 // Listener for status checks from the popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'CHECK_AI_STATUS') {
-        ensureSummarizerInitialized().then(isReady => {
-            sendResponse({ available: isReady });
+        // Check availability of both APIs (optional, but good for future proofing)
+        Promise.all([ensureSummarizerInitialized(), ensureTranslatorInitialized()]).then(([isSummarizerReady, isTranslatorReady]) => {
+            sendResponse({ available: isSummarizerReady || isTranslatorReady });
         });
         return true; 
     }
@@ -176,10 +240,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     const action = info.menuItemId.replace('quickmind_', ''); 
 
+    // --- Action Handler for SUMMARIZE ---
     if (action === 'summarize' && tab.id) {
         const isReady = await ensureSummarizerInitialized();
 
         if (!isReady) {
+            // ... (Error handling remains the same)
              chrome.tabs.sendMessage(tab.id, {
                 action: 'DISPLAY_RESULT',
                 result: 'AI Summarizer is not ready. Please wait a moment or check prerequisites.',
@@ -189,23 +255,21 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         }
 
         try {
-            // A. Get the selected text from the content script
+            // A. Get the selected text from the content script (remains the same)
             const response = await chrome.tabs.sendMessage(tab.id, {
                 action: 'GET_SELECTED_TEXT'
             });
             
             let selectedText = response.text;
             
-            // --- FIX: Input Sanitization (Aggressive Cleaning) ---
+            // Input Sanitization (remains the same)
             if (selectedText) {
-                // 1. Normalize all forms of whitespace (including non-breaking spaces)
                 selectedText = selectedText.replace(/[\s\uFEFF\xA0]+/g, ' ').trim();
-                // 2. Remove all non-ASCII control characters that might break the model
                 selectedText = selectedText.replace(/[^\x00-\x7F]/g, '');
             }
-            // ---------------------------------------------------
 
             if (!selectedText) {
+                // ... (Error handling remains the same)
                 chrome.tabs.sendMessage(tab.id, {
                     action: 'DISPLAY_RESULT',
                     result: 'Please highlight some text before running QuickMind.',
@@ -213,6 +277,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
                 });
                 return;
             }
+            
             // Send an instant LOADING message
             chrome.tabs.sendMessage(tab.id, {
               action: 'DISPLAY_RESULT',
@@ -220,7 +285,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
               originalAction: 'LOADING'
             })
 
-            // B. Execute the On-Device Summarization (Using Map-Reduce for long text)
+            // B. Execute the On-Device Summarization
             const summaryResultObject = await processLongSummary(quickMindSummarizer, selectedText);
             
             const summaryText = summaryResultObject && summaryResultObject.output
@@ -243,14 +308,90 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
             });
 
         } catch (error) {
+            // ... (Error handling remains the same)
             console.error('QuickMind Summarization Error:', error);
             if (tab.id) {
-                // FIX: Guard the error reporting message (Connection Guard)
                 chrome.tabs.get(tab.id, (currentTab) => {
                     if (!chrome.runtime.lastError && currentTab) {
                         chrome.tabs.sendMessage(currentTab.id, {
                             action: 'DISPLAY_RESULT',
                             result: `An unexpected error occurred during summarization: ${error.message}`,
+                            originalAction: action
+                        });
+                    } else {
+                         console.warn('Could not report error to tab; tab may have closed.');
+                    }
+                });
+            }
+        }
+    } 
+
+    // --- NEW ACTION HANDLER for TRANSLATE ---
+    else if (action === 'translate' && tab.id) {
+        const isReady = await ensureTranslatorInitialized();
+
+        if (!isReady) {
+             chrome.tabs.sendMessage(tab.id, {
+                action: 'DISPLAY_RESULT',
+                result: `AI Translator is not ready. Please wait, or check prerequisites. (Model: ${TRANSLATE_SOURCE} to ${TRANSLATE_TARGET})`,
+                originalAction: 'Error'
+            });
+            return;
+        }
+
+        try {
+            const response = await chrome.tabs.sendMessage(tab.id, {
+                action: 'GET_SELECTED_TEXT'
+            });
+            
+            let selectedText = response.text;
+            
+            if (!selectedText) {
+                chrome.tabs.sendMessage(tab.id, {
+                    action: 'DISPLAY_RESULT',
+                    result: 'Please highlight some text before running QuickMind.',
+                    originalAction: 'Error'
+                });
+                return;
+            }
+            
+            // Send an instant LOADING message
+            chrome.tabs.sendMessage(tab.id, {
+              action: 'DISPLAY_RESULT',
+              result: `Translating from ${TRANSLATE_SOURCE} to ${TRANSLATE_TARGET}...`,
+              originalAction: 'LOADING'
+            })
+
+            // Execute the On-Device Translation
+            const translationResultObject = await processTranslation(quickMindTranslator, selectedText);
+            
+            const translationText = translationResultObject && translationResultObject.output
+                ? translationResultObject.output 
+                : 'Translation failed to produce a result.';
+
+            console.log("Translation complete. Result length: ", translationText.length);
+
+            // Send the final result back to the content script for display
+            chrome.tabs.get(tab.id, (currentTab) => {
+                if (chrome.runtime.lastError) {
+                    console.error("Tab closed or invalid after translation:", chrome.runtime.lastError.message);
+                } else if (currentTab) {
+                    chrome.tabs.sendMessage(currentTab.id, {
+                        action: 'DISPLAY_RESULT',
+                        result: translationText,
+                        originalAction: action
+                    });
+                }
+            });
+
+        } catch (error) {
+            console.error('QuickMind Translation Error:', error);
+            if (tab.id) {
+                chrome.tabs.get(tab.id, (currentTab) => {
+                    if (!chrome.runtime.lastError && currentTab) {
+                        chrome.tabs.sendMessage(currentTab.id, {
+                            action: 'DISPLAY_RESULT',
+                            result: `An unexpected error occurred during translation: ${error.message}`,
                             originalAction: action
                         });
                     } else {
